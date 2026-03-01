@@ -75,8 +75,8 @@ export class MenuScene extends Phaser.Scene {
     const w = this.gameWidth;
     const h = this.gameHeight;
 
-    const terrainLine = 0.78;
-    const rocksBaseFrac = 0.80;
+    const terrainLine = 0.8;
+    const rocksBaseFrac = 0.8;
     const rocksShift = (rocksBaseFrac - terrainLine) * h;
 
     const layerConfigs = [
@@ -102,10 +102,10 @@ export class MenuScene extends Phaser.Scene {
       this.parallaxLayers.push({ tile, speed: cfg.speed });
     }
 
-    // Cover the bottom of rocks_1 image (in front of rocks at -8, behind clouds at -7.5)
+    // Fill hidden behind the slope
     const fill = this.add.graphics().setScrollFactor(0).setDepth(-7.9);
     fill.fillStyle(0x4A78A0, 1);
-    fill.fillRect(0, h * 0.63, w, h * 0.4);
+    fill.fillRect(0, h * 0.85, w, h * 0.20);
   }
 
   // ── Decorative slope ────────────────────────────────────────────

@@ -225,31 +225,34 @@ export class GameScene extends Phaser.Scene {
     const h = this.gameHeight;
     const w = this.gameWidth;
 
-    // Each layer: { key, depth, parallaxSpeed, alpha, tint, yOffset }
-    // Layers ordered back-to-front; parallaxSpeed = how fast it scrolls relative to camera
+    // Camera places terrain at ~55% from screen top (see update: py - h*0.55)
+    // Position mountain base to align with terrain line so snow covers the overlap
+    const terrainLine = 0.55;
+    // In rocks_1 source (1080px), mountain base/dark area ends at ~80% of image
+    const rocksBaseFrac = 0.80;
+    const rocksShift = (rocksBaseFrac - terrainLine) * h;
+
     const layerConfigs = [
-      { key: 'clouds_1', depth: -9,  speed: 0.02, alpha: 0.3,  tint: 0x8AB8D0, y: 0 },
-      { key: 'clouds_2', depth: -8.5, speed: 0.03, alpha: 0.25, tint: 0x9AC4D8, y: 0 },
-      { key: 'rocks_1',  depth: -8,  speed: 0.06, alpha: 0.45, tint: 0x7AAEC8, y: 0 },
-      { key: 'clouds_3', depth: -7.5, speed: 0.04, alpha: 0.2,  tint: 0xA0CCE0, y: 0 },
-      { key: 'clouds_4', depth: -7.2, speed: 0.05, alpha: 0.2,  tint: 0xA0CCE0, y: 0 },
-      { key: 'rocks_2',  depth: -7,  speed: 0.12, alpha: 0.35, tint: 0x6A9AB8, y: 0 },
+      { key: 'clouds_1', depth: -9,   speed: 0.02, alpha: 0.3,  tint: 0x8AB8D0, shiftY: 0 },
+      { key: 'clouds_2', depth: -8.5, speed: 0.03, alpha: 0.25, tint: 0x9AC4D8, shiftY: 0 },
+      { key: 'rocks_1',  depth: -8,   speed: 0.06, alpha: 0.45, tint: 0x7AAEC8, shiftY: rocksShift },
+      { key: 'clouds_3', depth: -7.5, speed: 0.04, alpha: 0.2,  tint: 0xA0CCE0, shiftY: 0 },
+      { key: 'clouds_4', depth: -7.2, speed: 0.05, alpha: 0.2,  tint: 0xA0CCE0, shiftY: 0 },
     ];
 
     this.parallaxLayers = [];
+    const scale = h / 1080;
 
     for (const cfg of layerConfigs) {
-      // TileSprite covers the full screen, tiles horizontally
-      const tile = this.add.tileSprite(0, 0, w, h, cfg.key);
+      const tile = this.add.tileSprite(0, -cfg.shiftY, w, h + cfg.shiftY, cfg.key);
       tile.setOrigin(0, 0);
       tile.setScrollFactor(0);
       tile.setDepth(cfg.depth);
       tile.setAlpha(cfg.alpha);
       tile.setTint(cfg.tint);
 
-      // Scale the 1920x1080 image to fill screen height
-      tile.tileScaleY = h / 1080;
-      tile.tileScaleX = h / 1080; // keep aspect ratio
+      tile.tileScaleY = scale;
+      tile.tileScaleX = scale;
 
       this.parallaxLayers.push({ tile, speed: cfg.speed });
     }

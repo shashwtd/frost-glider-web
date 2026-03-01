@@ -1,0 +1,18 @@
+{
+  "name": "frost-glider-web",
+  "version": "1.0.0",
+  "description": "A 2D infinite side-scrolling snowboarding game. Glide across smooth, procedurally generated hills while avoiding enemies lurking beneath the ice.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "phaser": "^3.90.0",
+    "vite": "^6.4.1"
+  }
+}

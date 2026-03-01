@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create vite@latest . -- --template vanilla)",
+      "Bash(npm init -y)",
+      "Bash(npm install phaser vite --save)",
+      "Bash(npx vite --host)"
+    ]
+  }
+}

@@ -29,6 +29,15 @@ export class GameScene extends Phaser.Scene {
   preload() {
     this.load.image('character', '/character.png');
     this.load.image('character-jump', '/character-jump.png');
+
+    // Parallax background layers
+    const bgPath = '/game_background_1/layers/';
+    this.load.image('clouds_1', bgPath + 'clouds_1.png');
+    this.load.image('clouds_2', bgPath + 'clouds_2.png');
+    this.load.image('clouds_3', bgPath + 'clouds_3.png');
+    this.load.image('clouds_4', bgPath + 'clouds_4.png');
+    this.load.image('rocks_1', bgPath + 'rocks_1.png');
+    this.load.image('rocks_2', bgPath + 'rocks_2.png');
   }
 
   create() {
@@ -50,6 +59,7 @@ export class GameScene extends Phaser.Scene {
 
     // Layers
     this.createSkyBackground();
+    this.createParallaxLayers();
 
     // Generate initial chunks
     this.updateChunks();
@@ -206,6 +216,50 @@ export class GameScene extends Phaser.Scene {
     for (const band of bands) {
       sky.fillGradientStyle(band.top, band.top, band.bot, band.bot, 1);
       sky.fillRect(0, band.y, w, band.h);
+    }
+  }
+
+  // ── Parallax background ────────────────────────────────────────
+
+  createParallaxLayers() {
+    const h = this.gameHeight;
+    const w = this.gameWidth;
+
+    // Each layer: { key, depth, parallaxSpeed, alpha, tint, yOffset }
+    // Layers ordered back-to-front; parallaxSpeed = how fast it scrolls relative to camera
+    const layerConfigs = [
+      { key: 'clouds_1', depth: -9,  speed: 0.02, alpha: 0.3,  tint: 0x8AB8D0, y: 0 },
+      { key: 'clouds_2', depth: -8.5, speed: 0.03, alpha: 0.25, tint: 0x9AC4D8, y: 0 },
+      { key: 'rocks_1',  depth: -8,  speed: 0.06, alpha: 0.45, tint: 0x7AAEC8, y: 0 },
+      { key: 'clouds_3', depth: -7.5, speed: 0.04, alpha: 0.2,  tint: 0xA0CCE0, y: 0 },
+      { key: 'clouds_4', depth: -7.2, speed: 0.05, alpha: 0.2,  tint: 0xA0CCE0, y: 0 },
+      { key: 'rocks_2',  depth: -7,  speed: 0.12, alpha: 0.35, tint: 0x6A9AB8, y: 0 },
+    ];
+
+    this.parallaxLayers = [];
+
+    for (const cfg of layerConfigs) {
+      // TileSprite covers the full screen, tiles horizontally
+      const tile = this.add.tileSprite(0, 0, w, h, cfg.key);
+      tile.setOrigin(0, 0);
+      tile.setScrollFactor(0);
+      tile.setDepth(cfg.depth);
+      tile.setAlpha(cfg.alpha);
+      tile.setTint(cfg.tint);
+
+      // Scale the 1920x1080 image to fill screen height
+      tile.tileScaleY = h / 1080;
+      tile.tileScaleX = h / 1080; // keep aspect ratio
+
+      this.parallaxLayers.push({ tile, speed: cfg.speed });
+    }
+  }
+
+  updateParallax() {
+    const cam = this.cameras.main;
+    for (const layer of this.parallaxLayers) {
+      // Shift tile position based on camera scroll — creates parallax
+      layer.tile.tilePositionX = cam.scrollX * layer.speed;
     }
   }
 
@@ -432,6 +486,7 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY += (targetY - cam.scrollY) * 0.04;
 
     this.updateChunks();
+    this.updateParallax();
     this.updatePlayerSprite();
     this.updateTrail();
     this.spawnSnowPuffs();

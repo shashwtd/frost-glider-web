@@ -9,7 +9,7 @@ const HILL_AMPLITUDE = 130;
 const FILL_BOTTOM = 2000;
 
 // Player
-const GRAVITY = 0.18;
+const GRAVITY = 0.15;
 const MIN_SPEED = 1.8;
 const MAX_SPEED = 5;
 const START_SPEED = 3;
@@ -38,6 +38,9 @@ export class GameScene extends Phaser.Scene {
     this.load.image('clouds_4', bgPath + 'clouds_4.png');
     this.load.image('rocks_1', bgPath + 'rocks_1.png');
     this.load.image('rocks_2', bgPath + 'rocks_2.png');
+
+    this.load.audio('bgm', '/snowboard.m4a');
+    this.load.audio('jump-ding', '/jump-ding.mp3');
   }
 
   create() {
@@ -84,12 +87,10 @@ export class GameScene extends Phaser.Scene {
     this.playerSprite.setDepth(10);
 
     // HUD
-    this.scoreText = this.add.text(20, 20, 'Score: 0', {
-      fontFamily: 'monospace',
-      fontSize: '24px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 3,
+    this.scoreText = this.add.text(20, 20, '0 m', {
+      fontFamily: '"Jersey 20", sans-serif',
+      fontSize: '28px',
+      color: '#fff',
     }).setScrollFactor(0).setDepth(100);
 
     // Input
@@ -103,6 +104,12 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-R', () => {
       if (!this.alive) this.scene.restart();
     });
+
+    // Snowboard sound — looping, pitched down, starts paused
+    this.bgm = this.sound.get('bgm');
+    if (!this.bgm) {
+      this.bgm = this.sound.add('bgm', { loop: true, volume: 0.4, rate: 0.7 });
+    }
   }
 
   // ── Terrain math ──────────────────────────────────────────────
@@ -170,6 +177,23 @@ export class GameScene extends Phaser.Scene {
     ground.lineTo(first.x, FILL_BOTTOM);
     ground.closePath();
     ground.fillPath();
+
+    // Surface texture — dashes and marks on the snow for sense of motion
+    const seed = index * 7919;
+    for (let i = 0; i < points.length - 1; i += 2) {
+      const p = points[i];
+      const hash = Math.sin(seed + i * 131) * 43758.5453;
+      const r = hash - Math.floor(hash);
+      if (r > 0.6) continue;
+
+      const len = 15 + r * 35;
+      const yOff = 3 + r * 8;
+      ground.lineStyle(1.5, 0xB0C4D4, 0.3 + r * 0.2);
+      ground.beginPath();
+      ground.moveTo(p.x, p.y + yOff);
+      ground.lineTo(p.x + len, p.y + yOff + (points[i + 1].y - p.y) * (len / POINT_SPACING / 3));
+      ground.strokePath();
+    }
 
     this.chunks.set(index, { ground });
   }
@@ -256,6 +280,11 @@ export class GameScene extends Phaser.Scene {
 
       this.parallaxLayers.push({ tile, speed: cfg.speed });
     }
+
+    // Solid fill below the mountains
+    const fill = this.add.graphics().setScrollFactor(0).setDepth(-8);
+    fill.fillStyle(0x4A78A0, 1);
+    fill.fillRect(0, h * 0.55, w, h * 0.5);
   }
 
   updateParallax() {
@@ -275,6 +304,13 @@ export class GameScene extends Phaser.Scene {
     if (this.grounded && Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
       this.grounded = false;
       this.vy = JUMP_FORCE;
+      this.sound.play('jump-ding', { volume: 0.5 });
+    }
+
+    if (this.grounded) {
+      if (!this.bgm.isPlaying) this.bgm.play();
+    } else {
+      if (this.bgm.isPlaying) this.bgm.pause();
     }
 
     if (this.grounded) {
@@ -295,7 +331,7 @@ export class GameScene extends Phaser.Scene {
       }
     } else {
       // Reduced gravity near the peak of a jump for hang time
-      const hangFactor = Math.abs(this.vy) < 2 ? 0.4 : 1.0;
+      const hangFactor = Math.abs(this.vy) < 2.5 ? 0.3 : 1.0;
       this.vy += GRAVITY * hangFactor;
       this.px += this.vx;
       this.py += this.vy;
@@ -486,7 +522,8 @@ export class GameScene extends Phaser.Scene {
     const targetX = this.px - this.gameWidth * 0.3;
     const targetY = this.py - this.gameHeight * 0.55;
     cam.scrollX += (targetX - cam.scrollX) * 0.08;
-    cam.scrollY += (targetY - cam.scrollY) * 0.04;
+    const easingY = this.grounded ? 0.04 : 0.12;
+    cam.scrollY += (targetY - cam.scrollY) * easingY;
 
     this.updateChunks();
     this.updateParallax();
@@ -496,8 +533,11 @@ export class GameScene extends Phaser.Scene {
     this.updateSnowPuffs();
     this.updateSnowfall();
 
-    this.score = Math.floor(this.px / 10);
-    this.scoreText.setText(`Score: ${this.score}`);
+    const newScore = Math.floor(this.px / 50) * 5;
+    if (newScore !== this.score) {
+      this.score = newScore;
+      this.scoreText.setText(`${this.score} m`);
+    }
 
     if (this.py > this.getTerrainY(this.px) + 600) {
       this.die();
@@ -506,21 +546,22 @@ export class GameScene extends Phaser.Scene {
 
   die() {
     this.alive = false;
+    if (this.bgm.isPlaying) this.bgm.pause();
 
     this.add.text(this.gameWidth / 2, this.gameHeight / 2 - 30, 'GAME OVER', {
-      fontFamily: 'monospace',
+      fontFamily: '"Jersey 20", sans-serif',
       fontSize: '48px',
-      color: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 5,
+      color: '#4A3228',
+      stroke: '#F0F4F8',
+      strokeThickness: 4,
     }).setScrollFactor(0).setOrigin(0.5).setDepth(100);
 
-    this.add.text(this.gameWidth / 2, this.gameHeight / 2 + 30, `Score: ${this.score}\nClick or press R to restart`, {
-      fontFamily: 'monospace',
+    this.add.text(this.gameWidth / 2, this.gameHeight / 2 + 30, `${this.score} m\nClick or press R to restart`, {
+      fontFamily: '"Jersey 20", sans-serif',
       fontSize: '20px',
-      color: '#ddeeff',
-      stroke: '#000000',
-      strokeThickness: 3,
+      color: '#5C4033',
+      stroke: '#F0F4F8',
+      strokeThickness: 2,
       align: 'center',
     }).setScrollFactor(0).setOrigin(0.5).setDepth(100);
   }

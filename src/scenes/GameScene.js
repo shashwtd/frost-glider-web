@@ -54,6 +54,11 @@ export class GameScene extends Phaser.Scene {
     // Generate initial chunks
     this.updateChunks();
 
+    // Snowfall (fixed to camera, behind everything gameplay)
+    this.snowfallGraphics = this.add.graphics().setScrollFactor(0).setDepth(-5);
+    this.snowflakes = [];
+    this.initSnowfall();
+
     // Trail (drawn behind player)
     this.trailGraphics = this.add.graphics().setDepth(5);
     this.trailPoints = [];
@@ -339,6 +344,79 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ── Snowfall ─────────────────────────────────────────────────────
+
+  initSnowfall() {
+    this.snowTime = 0;
+    // Global wind that shifts over time — two overlapping waves
+    this.windPhase1 = Math.random() * Math.PI * 2;
+    this.windPhase2 = Math.random() * Math.PI * 2;
+
+    const COUNT = 80;
+    for (let i = 0; i < COUNT; i++) {
+      this.snowflakes.push(this.createSnowflake(true));
+    }
+  }
+
+  createSnowflake(randomY) {
+    const layer = Math.random();
+    return {
+      x: Math.random() * (this.gameWidth + 100) - 50,
+      y: randomY ? Math.random() * this.gameHeight : -(Math.random() * 60),
+      size: 1 + layer * 2.5,                        // 1-3.5px
+      alpha: 0.1 + layer * 0.15,                    // visible but soft: 0.10-0.25
+      baseSpeedY: 0.12 + layer * 0.3,               // gentle fall
+      driftSensitivity: 0.2 + Math.random() * 0.5,
+      wobblePhase: Math.random() * Math.PI * 2,
+      wobbleSpeed: 0.002 + Math.random() * 0.006,
+      wobbleAmp: 0.1 + Math.random() * 0.3,
+      wobblePhase2: Math.random() * Math.PI * 2,
+      wobbleSpeed2: 0.001 + Math.random() * 0.003,
+      wobbleAmp2: 0.05 + Math.random() * 0.2,
+      round: Math.random() > 0.5,
+    };
+  }
+
+  updateSnowfall() {
+    this.snowfallGraphics.clear();
+    this.snowTime += 1;
+
+    // Global wind: slow-shifting breeze
+    const globalWind = Math.sin(this.snowTime * 0.0015 + this.windPhase1) * 0.1
+                     + Math.sin(this.snowTime * 0.0005 + this.windPhase2) * 0.06;
+
+    for (let i = 0; i < this.snowflakes.length; i++) {
+      const s = this.snowflakes[i];
+
+      s.wobblePhase += s.wobbleSpeed;
+      s.wobblePhase2 += s.wobbleSpeed2;
+
+      const drift = globalWind * s.driftSensitivity
+                   + Math.sin(s.wobblePhase) * s.wobbleAmp
+                   + Math.sin(s.wobblePhase2) * s.wobbleAmp2;
+
+      s.x += drift;
+      s.y += s.baseSpeedY;
+
+      // Wrap around
+      if (s.y > this.gameHeight + 10) {
+        s.y = -(Math.random() * 50);
+        s.x = Math.random() * (this.gameWidth + 100) - 50;
+      }
+      if (s.x > this.gameWidth + 30) s.x = -20;
+      if (s.x < -30) s.x = this.gameWidth + 20;
+
+      this.snowfallGraphics.fillStyle(0xFFFFFF, s.alpha);
+      const rx = Math.round(s.x);
+      const ry = Math.round(s.y);
+      if (s.round) {
+        this.snowfallGraphics.fillCircle(rx, ry, s.size * 0.5);
+      } else {
+        this.snowfallGraphics.fillRect(rx, ry, Math.round(s.size), Math.round(s.size));
+      }
+    }
+  }
+
   // ── Game loop ───────────────────────────────────────────────────
 
   update() {
@@ -358,6 +436,7 @@ export class GameScene extends Phaser.Scene {
     this.updateTrail();
     this.spawnSnowPuffs();
     this.updateSnowPuffs();
+    this.updateSnowfall();
 
     this.score = Math.floor(this.px / 10);
     this.scoreText.setText(`Score: ${this.score}`);

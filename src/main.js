@@ -5,14 +5,9 @@ const config = {
   type: Phaser.AUTO,
   width: window.innerWidth,
   height: window.innerHeight,
-  backgroundColor: '#87CEEB',
-  physics: {
-    default: 'matter',
-    matter: {
-      gravity: { y: 1.5 },
-      debug: false,
-    },
-  },
+  backgroundColor: '#1a1a2e',
+  antialias: false,
+  roundPixels: true,
   scene: [GameScene],
   scale: {
     mode: Phaser.Scale.RESIZE,

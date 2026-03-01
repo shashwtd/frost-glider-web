@@ -1,20 +1,18 @@
 import Phaser from 'phaser';
 
-// Terrain generation constants
-const SEGMENT_WIDTH = 20;        // Width of each terrain segment in px
-const TERRAIN_AHEAD = 80;        // How many segments to generate ahead of camera
-const TERRAIN_BEHIND = 20;       // How many segments to keep behind camera
-const BASE_Y = 0.55;             // Base terrain height as fraction of screen height
-const HILL_AMPLITUDE = 120;      // Max hill height variation
-const TERRAIN_THICKNESS = 600;   // How deep the terrain body extends below surface
+// Terrain chunks
+const CHUNK_WIDTH = 600;         // Each chunk covers 600px
+const POINT_SPACING = 10;        // Points within each chunk
+const CHUNKS_AHEAD = 4;          // Chunks to keep ahead of camera
+const CHUNKS_BEHIND = 2;         // Chunks to keep behind camera
+const HILL_AMPLITUDE = 130;
+const FILL_BOTTOM = 2000;        // Absolute Y for fill bottom (way off screen)
 
-// Player constants
-const PLAYER_RADIUS = 14;
-const PLAYER_START_X = 200;
-const MIN_SPEED = 4;             // Minimum horizontal speed
-const MAX_SPEED = 18;            // Maximum horizontal speed
-const SPEED_GAIN_DOWNHILL = 0.04;
-const SPEED_LOSS_UPHILL = 0.02;
+// Player
+const GRAVITY = 0.4;
+const MIN_SPEED = 1.8;
+const MAX_SPEED = 9;
+const START_SPEED = 3;
 
 export class GameScene extends Phaser.Scene {
   constructor() {
@@ -24,33 +22,30 @@ export class GameScene extends Phaser.Scene {
   create() {
     this.gameWidth = this.scale.width;
     this.gameHeight = this.scale.height;
+    this.baseY = this.gameHeight * 0.5;
 
-    // Terrain state
-    this.terrainPoints = [];       // Array of {x, y} for the surface line
-    this.terrainBodies = [];       // Matter.js bodies for terrain chunks
-    this.terrainGraphics = null;
-    this.nextTerrainX = 0;         // Next x position to generate terrain from
-    this.furthestGeneratedX = 0;
+    this.terrainSeed = Math.random() * 10000;
 
-    // Seed terrain params (layered sine waves for smooth hills)
-    this.terrainSeed = Math.random() * 1000;
+    // Chunk management: Map of chunkIndex → { ground, detail } graphics objects
+    this.chunks = new Map();
 
-    // Generate initial terrain
-    this.generateInitialTerrain();
-
-    // Create player
-    this.createPlayer();
-
-    // Camera follows player
-    this.cameras.main.startFollow(this.player, true, 0.1, 0.05);
-    this.cameras.main.setFollowOffset(-this.gameWidth * 0.3, -50);
-
-    // Speed / scoring
-    this.playerSpeed = 6;
+    // Player state
+    this.px = 300;
+    this.py = this.getTerrainY(300) - 20;
+    this.vx = START_SPEED;
+    this.vy = 0;
+    this.grounded = false;
     this.score = 0;
     this.alive = true;
 
-    // Score text (fixed to camera)
+    // Layers
+    this.createSkyBackground();
+    this.playerGraphics = this.add.graphics().setDepth(10);
+
+    // Generate initial chunks
+    this.updateChunks();
+
+    // HUD
     this.scoreText = this.add.text(20, 20, 'Score: 0', {
       fontFamily: 'monospace',
       fontSize: '24px',
@@ -59,287 +54,248 @@ export class GameScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setScrollFactor(0).setDepth(100);
 
-    this.speedText = this.add.text(20, 52, '', {
-      fontFamily: 'monospace',
-      fontSize: '16px',
-      color: '#ddeeff',
-      stroke: '#000000',
-      strokeThickness: 2,
-    }).setScrollFactor(0).setDepth(100);
-
-    // Sky gradient background
-    this.createSkyBackground();
-
-    // Input for restart
+    // Restart
     this.input.on('pointerdown', () => {
       if (!this.alive) this.scene.restart();
     });
     this.input.keyboard.on('keydown-R', () => {
       if (!this.alive) this.scene.restart();
     });
-
-    // Collision detection
-    this.matter.world.on('collisionstart', (event) => {
-      for (const pair of event.pairs) {
-        const labels = [pair.bodyA.label, pair.bodyB.label];
-        if (labels.includes('player') && labels.includes('terrain')) {
-          this.playerOnGround = true;
-        }
-      }
-    });
   }
+
+  // ── Terrain math (deterministic, no stored points needed) ──────
 
   getTerrainY(x) {
-    // Layered sine waves for smooth, varied hills
     const s = this.terrainSeed;
-    const baseY = this.gameHeight * BASE_Y;
-
-    const y = baseY
-      + Math.sin((x + s) * 0.002) * HILL_AMPLITUDE * 0.8
-      + Math.sin((x + s) * 0.005) * HILL_AMPLITUDE * 0.5
-      + Math.sin((x + s) * 0.01) * HILL_AMPLITUDE * 0.3
-      + Math.sin((x + s) * 0.0007) * HILL_AMPLITUDE * 1.2;
-
-    return y;
+    return this.baseY
+      + Math.sin((x + s) * 0.0003) * HILL_AMPLITUDE * 1.6
+      + Math.sin((x + s) * 0.0009) * HILL_AMPLITUDE * 0.9
+      + Math.sin((x + s) * 0.0025) * HILL_AMPLITUDE * 0.35
+      + Math.sin((x + s) * 0.006) * HILL_AMPLITUDE * 0.08;
   }
 
-  generateInitialTerrain() {
-    // Generate terrain from behind the start to well ahead
-    const startX = -SEGMENT_WIDTH * TERRAIN_BEHIND;
-    const endX = this.gameWidth + SEGMENT_WIDTH * TERRAIN_AHEAD;
-
-    for (let x = startX; x <= endX; x += SEGMENT_WIDTH) {
-      this.terrainPoints.push({ x, y: this.getTerrainY(x) });
-    }
-
-    this.nextTerrainX = endX + SEGMENT_WIDTH;
-    this.furthestGeneratedX = endX;
-
-    // Build terrain bodies
-    this.buildTerrainBodies();
-
-    // Draw terrain
-    this.terrainGraphics = this.add.graphics();
-    this.drawTerrain();
+  getTerrainSlope(x) {
+    const dx = 4;
+    return (this.getTerrainY(x + dx) - this.getTerrainY(x - dx)) / (dx * 2);
   }
 
-  buildTerrainBodies() {
-    // Remove old bodies
-    for (const body of this.terrainBodies) {
-      this.matter.world.remove(body);
+  // ── Chunk system ───────────────────────────────────────────────
+
+  getChunkIndex(x) {
+    return Math.floor(x / CHUNK_WIDTH);
+  }
+
+  // Simple deterministic hash for icicle placement
+  seededRandom(seed) {
+    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  createChunk(index) {
+    const startX = index * CHUNK_WIDTH;
+    const endX = startX + CHUNK_WIDTH;
+
+    const points = [];
+    for (let x = startX; x <= endX + POINT_SPACING; x += POINT_SPACING) {
+      points.push({ x, y: this.getTerrainY(x) });
     }
-    this.terrainBodies = [];
 
-    // Create terrain from point pairs as trapezoid bodies
-    for (let i = 0; i < this.terrainPoints.length - 1; i++) {
-      const p1 = this.terrainPoints[i];
-      const p2 = this.terrainPoints[i + 1];
+    const first = points[0];
+    const last = points[points.length - 1];
 
-      const cx = (p1.x + p2.x) / 2;
-      const cy = (Math.max(p1.y, p2.y) + TERRAIN_THICKNESS / 2);
+    const ground = this.add.graphics().setDepth(1);
 
-      const vertices = [
-        { x: p1.x - cx, y: p1.y - cy },
-        { x: p2.x - cx, y: p2.y - cy },
-        { x: p2.x - cx, y: p2.y - cy + TERRAIN_THICKNESS },
-        { x: p1.x - cx, y: p1.y - cy + TERRAIN_THICKNESS },
-      ];
+    // Clean snow fill — just white, all the way down
+    ground.fillStyle(0xF0F4F8, 1);
+    ground.beginPath();
+    ground.moveTo(first.x, first.y);
+    for (let i = 1; i < points.length; i++) ground.lineTo(points[i].x, points[i].y);
+    ground.lineTo(last.x, FILL_BOTTOM);
+    ground.lineTo(first.x, FILL_BOTTOM);
+    ground.closePath();
+    ground.fillPath();
 
-      const body = this.matter.add.fromVertices(cx, cy, vertices, {
-        isStatic: true,
-        friction: 0.002,
-        restitution: 0.0,
-        label: 'terrain',
-      });
+    // Subtle depth shadow — very soft blue tint just below surface
+    ground.fillStyle(0xDAE3ED, 0.35);
+    ground.beginPath();
+    ground.moveTo(first.x, first.y + 40);
+    for (let i = 1; i < points.length; i++) ground.lineTo(points[i].x, points[i].y + 40);
+    ground.lineTo(last.x, FILL_BOTTOM);
+    ground.lineTo(first.x, FILL_BOTTOM);
+    ground.closePath();
+    ground.fillPath();
 
-      if (body) {
-        this.terrainBodies.push(body);
+    // Deeper shadow — slightly more blue further down
+    ground.fillStyle(0xC4D0DE, 0.3);
+    ground.beginPath();
+    ground.moveTo(first.x, first.y + 150);
+    for (let i = 1; i < points.length; i++) ground.lineTo(points[i].x, points[i].y + 150);
+    ground.lineTo(last.x, FILL_BOTTOM);
+    ground.lineTo(first.x, FILL_BOTTOM);
+    ground.closePath();
+    ground.fillPath();
+
+    this.chunks.set(index, { ground });
+  }
+
+  destroyChunk(index) {
+    const chunk = this.chunks.get(index);
+    if (chunk) {
+      chunk.ground.destroy();
+      this.chunks.delete(index);
+    }
+  }
+
+  updateChunks() {
+    const cam = this.cameras.main;
+    const camLeft = cam.scrollX;
+    const camRight = camLeft + this.gameWidth;
+
+    const minChunk = this.getChunkIndex(camLeft) - CHUNKS_BEHIND;
+    const maxChunk = this.getChunkIndex(camRight) + CHUNKS_AHEAD;
+
+    // Create needed chunks
+    for (let i = minChunk; i <= maxChunk; i++) {
+      if (!this.chunks.has(i)) {
+        this.createChunk(i);
+      }
+    }
+
+    // Destroy far-away chunks
+    for (const [index] of this.chunks) {
+      if (index < minChunk - 1 || index > maxChunk + 1) {
+        this.destroyChunk(index);
       }
     }
   }
 
-  drawTerrain() {
-    this.terrainGraphics.clear();
+  // ── Sky ─────────────────────────────────────────────────────────
 
-    // Draw filled terrain
-    this.terrainGraphics.fillStyle(0xE8F0F8, 1); // Snow white-ish
-    this.terrainGraphics.beginPath();
+  createSkyBackground() {
+    const sky = this.add.graphics().setScrollFactor(0).setDepth(-10);
+    const h = this.gameHeight;
+    const w = this.gameWidth;
 
-    const first = this.terrainPoints[0];
-    this.terrainGraphics.moveTo(first.x, first.y);
+    const bands = [
+      { y: 0,        h: h * 0.25, top: 0x2B4970, bot: 0x3A6B8F },
+      { y: h * 0.25, h: h * 0.25, top: 0x3A6B8F, bot: 0x5B9BBF },
+      { y: h * 0.50, h: h * 0.25, top: 0x5B9BBF, bot: 0x89BDD6 },
+      { y: h * 0.75, h: h * 0.25, top: 0x89BDD6, bot: 0xB8D8E8 },
+    ];
 
-    for (let i = 1; i < this.terrainPoints.length; i++) {
-      this.terrainGraphics.lineTo(this.terrainPoints[i].x, this.terrainPoints[i].y);
-    }
-
-    // Close off the bottom
-    const last = this.terrainPoints[this.terrainPoints.length - 1];
-    this.terrainGraphics.lineTo(last.x, last.y + TERRAIN_THICKNESS);
-    this.terrainGraphics.lineTo(first.x, first.y + TERRAIN_THICKNESS);
-    this.terrainGraphics.closePath();
-    this.terrainGraphics.fillPath();
-
-    // Draw surface line (icy blue tint)
-    this.terrainGraphics.lineStyle(3, 0xB0D4E8, 1);
-    this.terrainGraphics.beginPath();
-    this.terrainGraphics.moveTo(first.x, first.y);
-    for (let i = 1; i < this.terrainPoints.length; i++) {
-      this.terrainGraphics.lineTo(this.terrainPoints[i].x, this.terrainPoints[i].y);
-    }
-    this.terrainGraphics.strokePath();
-
-    // Under-ice darker layer
-    this.terrainGraphics.fillStyle(0xC8D8E8, 1);
-    this.terrainGraphics.beginPath();
-    this.terrainGraphics.moveTo(first.x, first.y + 8);
-    for (let i = 1; i < this.terrainPoints.length; i++) {
-      this.terrainGraphics.lineTo(this.terrainPoints[i].x, this.terrainPoints[i].y + 8);
-    }
-    this.terrainGraphics.lineTo(last.x, last.y + 40);
-    this.terrainGraphics.lineTo(first.x, first.y + 40);
-    this.terrainGraphics.closePath();
-    this.terrainGraphics.fillPath();
-  }
-
-  extendTerrain() {
-    const cameraRight = this.cameras.main.scrollX + this.gameWidth;
-    const needed = cameraRight + SEGMENT_WIDTH * TERRAIN_AHEAD;
-
-    let changed = false;
-
-    // Add new points ahead
-    while (this.furthestGeneratedX < needed) {
-      this.furthestGeneratedX += SEGMENT_WIDTH;
-      this.terrainPoints.push({
-        x: this.furthestGeneratedX,
-        y: this.getTerrainY(this.furthestGeneratedX),
-      });
-      changed = true;
-    }
-
-    // Remove points too far behind
-    const cameraLeft = this.cameras.main.scrollX;
-    const removeThreshold = cameraLeft - SEGMENT_WIDTH * TERRAIN_BEHIND;
-    while (this.terrainPoints.length > 2 && this.terrainPoints[0].x < removeThreshold) {
-      this.terrainPoints.shift();
-      changed = true;
-    }
-
-    if (changed) {
-      this.buildTerrainBodies();
-      this.drawTerrain();
+    for (const band of bands) {
+      sky.fillGradientStyle(band.top, band.top, band.bot, band.bot, 1);
+      sky.fillRect(0, band.y, w, band.h);
     }
   }
 
-  createPlayer() {
-    const startY = this.getTerrainY(PLAYER_START_X) - PLAYER_RADIUS - 10;
+  // ── Player ──────────────────────────────────────────────────────
 
-    this.player = this.matter.add.circle(PLAYER_START_X, startY, PLAYER_RADIUS, {
-      friction: 0.001,
-      restitution: 0.05,
-      density: 0.002,
-      label: 'player',
-    });
+  updatePlayer() {
+    const slope = this.getTerrainSlope(this.px);
 
-    this.playerOnGround = false;
+    if (this.grounded) {
+      const slopeForce = slope * 0.06;
+      this.vx += slopeForce;
+      this.vx = Phaser.Math.Clamp(this.vx, MIN_SPEED, MAX_SPEED);
 
-    // Visual for the player
-    this.playerGraphics = this.add.graphics();
-    this.playerGraphics.setDepth(10);
+      this.px += this.vx;
+
+      const newTerrainY = this.getTerrainY(this.px);
+      this.py = newTerrainY;
+
+      // Launch off crests
+      const nextTerrainY = this.getTerrainY(this.px + this.vx);
+      if (nextTerrainY - newTerrainY > 2) {
+        this.grounded = false;
+        this.vy = slope * this.vx;
+      }
+    } else {
+      this.vy += GRAVITY;
+      this.px += this.vx;
+      this.py += this.vy;
+
+      const groundY = this.getTerrainY(this.px);
+      if (this.py >= groundY) {
+        this.py = groundY;
+        this.vy = 0;
+        this.grounded = true;
+      }
+    }
   }
 
   drawPlayer() {
-    const px = this.player.position.x;
-    const py = this.player.position.y;
-
+    const px = this.px;
+    const py = this.py;
     this.playerGraphics.clear();
 
-    // Board (a line beneath the player)
-    const angle = this.player.angle;
-    const boardLen = 22;
+    const slope = this.getTerrainSlope(px);
+    const angle = this.grounded ? Math.atan(slope) : Math.atan2(this.vy, this.vx) * 0.3;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
 
-    // Body (simple snowboarder silhouette)
+    // Snowboard
+    const boardLen = 18;
+    const boardY = py - 2;
+    this.playerGraphics.lineStyle(3.5, 0x1ABC9C, 1);
+    this.playerGraphics.beginPath();
+    this.playerGraphics.moveTo(px - boardLen * cos, boardY + boardLen * sin);
+    this.playerGraphics.lineTo(px + boardLen * cos, boardY - boardLen * sin);
+    this.playerGraphics.strokePath();
+
+    // Legs
+    this.playerGraphics.lineStyle(2, 0x2C3E50, 1);
+    this.playerGraphics.beginPath();
+    this.playerGraphics.moveTo(px - 3, boardY);
+    this.playerGraphics.lineTo(px - 1, py - 12);
+    this.playerGraphics.moveTo(px + 4, boardY);
+    this.playerGraphics.lineTo(px + 1, py - 12);
+    this.playerGraphics.strokePath();
+
+    // Torso
+    this.playerGraphics.fillStyle(0x34495E, 1);
+    this.playerGraphics.fillRect(px - 3, py - 22, 6, 11);
+
+    // Head
     this.playerGraphics.fillStyle(0x2C3E50, 1);
-    this.playerGraphics.fillCircle(px, py - 8, 7); // Head
-    this.playerGraphics.fillRect(px - 3, py - 1, 6, 14); // Torso
+    this.playerGraphics.fillCircle(px, py - 27, 5);
 
-    // Board
-    this.playerGraphics.lineStyle(4, 0x1ABC9C, 1);
+    // Scarf
+    this.playerGraphics.lineStyle(2.5, 0xE74C3C, 0.9);
     this.playerGraphics.beginPath();
-    this.playerGraphics.moveTo(px - boardLen * cos, py + 10 - boardLen * sin);
-    this.playerGraphics.lineTo(px + boardLen * cos, py + 10 + boardLen * sin);
-    this.playerGraphics.strokePath();
-
-    // Scarf / trail effect
-    this.playerGraphics.lineStyle(2, 0xE74C3C, 0.8);
-    this.playerGraphics.beginPath();
-    this.playerGraphics.moveTo(px, py - 4);
-    this.playerGraphics.lineTo(px - 12 * cos - 5, py - 4 - 12 * sin + 2);
+    this.playerGraphics.moveTo(px, py - 22);
+    this.playerGraphics.lineTo(px - 12, py - 25);
+    this.playerGraphics.lineTo(px - 22, py - 22);
     this.playerGraphics.strokePath();
   }
 
-  createSkyBackground() {
-    // Simple gradient sky using a rectangle with gradient fill
-    const sky = this.add.graphics();
-    sky.setScrollFactor(0);
-    sky.setDepth(-10);
+  // ── Game loop ───────────────────────────────────────────────────
 
-    // Top of sky
-    sky.fillGradientStyle(0x4A90C4, 0x4A90C4, 0x87CEEB, 0x87CEEB, 1);
-    sky.fillRect(0, 0, this.gameWidth, this.gameHeight * 0.5);
-
-    // Bottom of sky
-    sky.fillGradientStyle(0x87CEEB, 0x87CEEB, 0xB8DBE8, 0xB8DBE8, 1);
-    sky.fillRect(0, this.gameHeight * 0.5, this.gameWidth, this.gameHeight * 0.5);
-  }
-
-  update(time, delta) {
+  update() {
     if (!this.alive) return;
 
-    // Calculate slope at player position for speed adjustment
-    const px = this.player.position.x;
-    const slopeAhead = this.getTerrainY(px + 20) - this.getTerrainY(px - 20);
+    this.updatePlayer();
 
-    // Going downhill (positive slope = terrain goes down) -> speed up
-    // Going uphill (negative slope) -> slow down
-    if (slopeAhead > 0) {
-      this.playerSpeed = Math.min(MAX_SPEED, this.playerSpeed + SPEED_GAIN_DOWNHILL * (slopeAhead / 10));
-    } else {
-      this.playerSpeed = Math.max(MIN_SPEED, this.playerSpeed + SPEED_LOSS_UPHILL * (slopeAhead / 10));
-    }
+    // Smooth camera
+    const cam = this.cameras.main;
+    const targetX = this.px - this.gameWidth * 0.3;
+    const targetY = this.py - this.gameHeight * 0.55;
+    cam.scrollX += (targetX - cam.scrollX) * 0.08;
+    cam.scrollY += (targetY - cam.scrollY) * 0.04;
 
-    // Apply horizontal velocity
-    this.matter.body.setVelocity(this.player, {
-      x: this.playerSpeed,
-      y: this.player.velocity.y,
-    });
-
-    // Extend terrain as we move
-    this.extendTerrain();
-
-    // Draw player
+    this.updateChunks();
     this.drawPlayer();
 
-    // Update score based on distance
-    this.score = Math.floor(this.player.position.x / 10);
+    this.score = Math.floor(this.px / 10);
     this.scoreText.setText(`Score: ${this.score}`);
-    this.speedText.setText(`Speed: ${this.playerSpeed.toFixed(1)}`);
 
-    // Death check: if player falls way below terrain
-    const terrainYAtPlayer = this.getTerrainY(px);
-    if (this.player.position.y > terrainYAtPlayer + 300) {
+    if (this.py > this.getTerrainY(this.px) + 600) {
       this.die();
     }
   }
 
   die() {
     this.alive = false;
-
-    // Show game over
-    const cx = this.cameras.main.scrollX + this.gameWidth / 2;
-    const cy = this.cameras.main.scrollY + this.gameHeight / 2;
 
     this.add.text(this.gameWidth / 2, this.gameHeight / 2 - 30, 'GAME OVER', {
       fontFamily: 'monospace',

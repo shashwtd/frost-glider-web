@@ -1,22 +1,34 @@
 import Phaser from 'phaser';
 
 // Terrain chunks
-const CHUNK_WIDTH = 600;         // Each chunk covers 600px
-const POINT_SPACING = 10;        // Points within each chunk
-const CHUNKS_AHEAD = 4;          // Chunks to keep ahead of camera
-const CHUNKS_BEHIND = 2;         // Chunks to keep behind camera
+const CHUNK_WIDTH = 600;
+const POINT_SPACING = 10;
+const CHUNKS_AHEAD = 4;
+const CHUNKS_BEHIND = 2;
 const HILL_AMPLITUDE = 130;
-const FILL_BOTTOM = 2000;        // Absolute Y for fill bottom (way off screen)
+const FILL_BOTTOM = 2000;
 
 // Player
-const GRAVITY = 0.4;
+const GRAVITY = 0.18;
 const MIN_SPEED = 1.8;
-const MAX_SPEED = 9;
+const MAX_SPEED = 5;
 const START_SPEED = 3;
+const JUMP_FORCE = -6;
+const PLAYER_SCALE = 0.22;
+const PLAYER_JUMP_SCALE = 0.18;
+
+// Trail
+const TRAIL_LENGTH = 45;
+const TRAIL_FADE_SPEED = 0.012;
 
 export class GameScene extends Phaser.Scene {
   constructor() {
     super({ key: 'GameScene' });
+  }
+
+  preload() {
+    this.load.image('character', '/character.png');
+    this.load.image('character-jump', '/character-jump.png');
   }
 
   create() {
@@ -25,8 +37,6 @@ export class GameScene extends Phaser.Scene {
     this.baseY = this.gameHeight * 0.5;
 
     this.terrainSeed = Math.random() * 10000;
-
-    // Chunk management: Map of chunkIndex → { ground, detail } graphics objects
     this.chunks = new Map();
 
     // Player state
@@ -40,10 +50,23 @@ export class GameScene extends Phaser.Scene {
 
     // Layers
     this.createSkyBackground();
-    this.playerGraphics = this.add.graphics().setDepth(10);
 
     // Generate initial chunks
     this.updateChunks();
+
+    // Trail (drawn behind player)
+    this.trailGraphics = this.add.graphics().setDepth(5);
+    this.trailPoints = [];
+
+    // Snow puff particles
+    this.snowPuffs = [];
+    this.puffGraphics = this.add.graphics().setDepth(6);
+
+    // Player sprite
+    this.playerSprite = this.add.image(this.px, this.py, 'character');
+    this.playerSprite.setScale(PLAYER_SCALE);
+    this.playerSprite.setOrigin(0.5, 0.90);
+    this.playerSprite.setDepth(10);
 
     // HUD
     this.scoreText = this.add.text(20, 20, 'Score: 0', {
@@ -54,6 +77,10 @@ export class GameScene extends Phaser.Scene {
       strokeThickness: 3,
     }).setScrollFactor(0).setDepth(100);
 
+    // Input
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+
     // Restart
     this.input.on('pointerdown', () => {
       if (!this.alive) this.scene.restart();
@@ -63,7 +90,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  // ── Terrain math (deterministic, no stored points needed) ──────
+  // ── Terrain math ──────────────────────────────────────────────
 
   getTerrainY(x) {
     const s = this.terrainSeed;
@@ -85,12 +112,6 @@ export class GameScene extends Phaser.Scene {
     return Math.floor(x / CHUNK_WIDTH);
   }
 
-  // Simple deterministic hash for icicle placement
-  seededRandom(seed) {
-    const x = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
-    return x - Math.floor(x);
-  }
-
   createChunk(index) {
     const startX = index * CHUNK_WIDTH;
     const endX = startX + CHUNK_WIDTH;
@@ -105,7 +126,7 @@ export class GameScene extends Phaser.Scene {
 
     const ground = this.add.graphics().setDepth(1);
 
-    // Clean snow fill — just white, all the way down
+    // Clean snow fill
     ground.fillStyle(0xF0F4F8, 1);
     ground.beginPath();
     ground.moveTo(first.x, first.y);
@@ -115,7 +136,7 @@ export class GameScene extends Phaser.Scene {
     ground.closePath();
     ground.fillPath();
 
-    // Subtle depth shadow — very soft blue tint just below surface
+    // Subtle depth shadow
     ground.fillStyle(0xDAE3ED, 0.35);
     ground.beginPath();
     ground.moveTo(first.x, first.y + 40);
@@ -125,7 +146,7 @@ export class GameScene extends Phaser.Scene {
     ground.closePath();
     ground.fillPath();
 
-    // Deeper shadow — slightly more blue further down
+    // Deeper shadow
     ground.fillStyle(0xC4D0DE, 0.3);
     ground.beginPath();
     ground.moveTo(first.x, first.y + 150);
@@ -154,18 +175,12 @@ export class GameScene extends Phaser.Scene {
     const minChunk = this.getChunkIndex(camLeft) - CHUNKS_BEHIND;
     const maxChunk = this.getChunkIndex(camRight) + CHUNKS_AHEAD;
 
-    // Create needed chunks
     for (let i = minChunk; i <= maxChunk; i++) {
-      if (!this.chunks.has(i)) {
-        this.createChunk(i);
-      }
+      if (!this.chunks.has(i)) this.createChunk(i);
     }
 
-    // Destroy far-away chunks
     for (const [index] of this.chunks) {
-      if (index < minChunk - 1 || index > maxChunk + 1) {
-        this.destroyChunk(index);
-      }
+      if (index < minChunk - 1 || index > maxChunk + 1) this.destroyChunk(index);
     }
   }
 
@@ -194,6 +209,12 @@ export class GameScene extends Phaser.Scene {
   updatePlayer() {
     const slope = this.getTerrainSlope(this.px);
 
+    // Jump
+    if (this.grounded && Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
+      this.grounded = false;
+      this.vy = JUMP_FORCE;
+    }
+
     if (this.grounded) {
       const slopeForce = slope * 0.06;
       this.vx += slopeForce;
@@ -211,7 +232,9 @@ export class GameScene extends Phaser.Scene {
         this.vy = slope * this.vx;
       }
     } else {
-      this.vy += GRAVITY;
+      // Reduced gravity near the peak of a jump for hang time
+      const hangFactor = Math.abs(this.vy) < 2 ? 0.4 : 1.0;
+      this.vy += GRAVITY * hangFactor;
       this.px += this.vx;
       this.py += this.vy;
 
@@ -224,49 +247,96 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  drawPlayer() {
-    const px = this.px;
-    const py = this.py;
-    this.playerGraphics.clear();
+  updatePlayerSprite() {
+    this.playerSprite.x = this.px;
+    this.playerSprite.y = this.py;
 
-    const slope = this.getTerrainSlope(px);
-    const angle = this.grounded ? Math.atan(slope) : Math.atan2(this.vy, this.vx) * 0.3;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
+    // Swap texture and scale based on state
+    const wantedTexture = this.grounded ? 'character' : 'character-jump';
+    const wantedScale = this.grounded ? PLAYER_SCALE : PLAYER_JUMP_SCALE;
+    if (this.playerSprite.texture.key !== wantedTexture) {
+      this.playerSprite.setTexture(wantedTexture);
+      this.playerSprite.setScale(wantedScale);
+    }
 
-    // Snowboard
-    const boardLen = 18;
-    const boardY = py - 2;
-    this.playerGraphics.lineStyle(3.5, 0x1ABC9C, 1);
-    this.playerGraphics.beginPath();
-    this.playerGraphics.moveTo(px - boardLen * cos, boardY + boardLen * sin);
-    this.playerGraphics.lineTo(px + boardLen * cos, boardY - boardLen * sin);
-    this.playerGraphics.strokePath();
+    // Tilt with terrain when grounded, stay level when airborne
+    const slope = this.getTerrainSlope(this.px);
+    let targetAngle;
+    if (this.grounded) {
+      targetAngle = Phaser.Math.RadToDeg(Math.atan(slope));
+    } else {
+      targetAngle = 0;
+    }
 
-    // Legs
-    this.playerGraphics.lineStyle(2, 0x2C3E50, 1);
-    this.playerGraphics.beginPath();
-    this.playerGraphics.moveTo(px - 3, boardY);
-    this.playerGraphics.lineTo(px - 1, py - 12);
-    this.playerGraphics.moveTo(px + 4, boardY);
-    this.playerGraphics.lineTo(px + 1, py - 12);
-    this.playerGraphics.strokePath();
+    // Smooth rotation
+    const currentAngle = this.playerSprite.angle;
+    this.playerSprite.angle = currentAngle + (targetAngle - currentAngle) * 0.15;
+  }
 
-    // Torso
-    this.playerGraphics.fillStyle(0x34495E, 1);
-    this.playerGraphics.fillRect(px - 3, py - 22, 6, 11);
+  // ── Trail & particles ─────────────────────────────────────────
 
-    // Head
-    this.playerGraphics.fillStyle(0x2C3E50, 1);
-    this.playerGraphics.fillCircle(px, py - 27, 5);
+  updateTrail() {
+    if (this.grounded) {
+      this.trailPoints.push({ x: this.px, y: this.py, alpha: 0.6 });
+    }
 
-    // Scarf
-    this.playerGraphics.lineStyle(2.5, 0xE74C3C, 0.9);
-    this.playerGraphics.beginPath();
-    this.playerGraphics.moveTo(px, py - 22);
-    this.playerGraphics.lineTo(px - 12, py - 25);
-    this.playerGraphics.lineTo(px - 22, py - 22);
-    this.playerGraphics.strokePath();
+    for (let i = this.trailPoints.length - 1; i >= 0; i--) {
+      this.trailPoints[i].alpha -= TRAIL_FADE_SPEED;
+      if (this.trailPoints[i].alpha <= 0) {
+        this.trailPoints.splice(i, 1);
+      }
+    }
+
+    while (this.trailPoints.length > TRAIL_LENGTH) {
+      this.trailPoints.shift();
+    }
+
+    this.trailGraphics.clear();
+    if (this.trailPoints.length < 2) return;
+
+    for (let i = 1; i < this.trailPoints.length; i++) {
+      const p = this.trailPoints[i];
+      const prev = this.trailPoints[i - 1];
+      const t = i / this.trailPoints.length;
+      this.trailGraphics.lineStyle(t * 3, 0xB0D4E8, p.alpha * 0.7);
+      this.trailGraphics.beginPath();
+      this.trailGraphics.moveTo(prev.x, prev.y);
+      this.trailGraphics.lineTo(p.x, p.y);
+      this.trailGraphics.strokePath();
+    }
+  }
+
+  spawnSnowPuffs() {
+    if (!this.grounded) return;
+    if (Math.random() < Math.abs(this.vx) * 0.15) {
+      this.snowPuffs.push({
+        x: this.px - 8 - Math.random() * 10,
+        y: this.py - 2,
+        vx: -0.3 - Math.random() * 0.8,
+        vy: -0.5 - Math.random() * 1.5,
+        size: 2 + Math.random() * 4,
+        alpha: 0.6 + Math.random() * 0.3,
+      });
+    }
+  }
+
+  updateSnowPuffs() {
+    this.puffGraphics.clear();
+    for (let i = this.snowPuffs.length - 1; i >= 0; i--) {
+      const p = this.snowPuffs[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.02;
+      p.alpha -= 0.015;
+      p.size *= 0.99;
+
+      if (p.alpha <= 0) {
+        this.snowPuffs.splice(i, 1);
+        continue;
+      }
+      this.puffGraphics.fillStyle(0xFFFFFF, p.alpha);
+      this.puffGraphics.fillCircle(p.x, p.y, p.size);
+    }
   }
 
   // ── Game loop ───────────────────────────────────────────────────
@@ -284,7 +354,10 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY += (targetY - cam.scrollY) * 0.04;
 
     this.updateChunks();
-    this.drawPlayer();
+    this.updatePlayerSprite();
+    this.updateTrail();
+    this.spawnSnowPuffs();
+    this.updateSnowPuffs();
 
     this.score = Math.floor(this.px / 10);
     this.scoreText.setText(`Score: ${this.score}`);
